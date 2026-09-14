@@ -33,7 +33,13 @@ class XBoardIME : InputMethodService() {
     private var isSymbols = false
     private val currentWordBuffer = StringBuilder()
 
-    // High frequency offline vocabulary for word suggestions
+    // STRICT COLOR PALETTE: Only Black, White, DarkGray, #07F57E
+    private val COLOR_BLACK = Color.parseColor("#000000")
+    private val COLOR_WHITE = Color.parseColor("#FFFFFF")
+    private val COLOR_DARK_GRAY = Color.parseColor("#212121")
+    private val COLOR_SPECIAL_DARK_GRAY = Color.parseColor("#2F2F2F")
+    private val COLOR_ACCENT_GREEN = Color.parseColor("#07F57E")
+
     private val commonWords = listOf(
         "the", "be", "to", "of", "and", "a", "in", "that", "have", "i",
         "it", "for", "not", "on", "with", "he", "as", "you", "do", "at",
@@ -66,7 +72,7 @@ class XBoardIME : InputMethodService() {
     override fun onCreateInputView(): View {
         mainContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#0F172A"))
+            setBackgroundColor(COLOR_BLACK)
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -86,7 +92,7 @@ class XBoardIME : InputMethodService() {
 
         val brandLabel = TextView(this).apply {
             text = "X-BOARD"
-            setTextColor(Color.parseColor("#38BDF8"))
+            setTextColor(COLOR_ACCENT_GREEN)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             typeface = Typeface.DEFAULT_BOLD
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
@@ -94,8 +100,8 @@ class XBoardIME : InputMethodService() {
         headerRow.addView(brandLabel)
 
         statusText = TextView(this).apply {
-            text = "EN • PREDICTIVE"
-            setTextColor(Color.parseColor("#94A3B8"))
+            text = "FAST TYPING"
+            setTextColor(COLOR_WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
         }
         headerRow.addView(statusText)
@@ -105,11 +111,11 @@ class XBoardIME : InputMethodService() {
             isHorizontalScrollBarEnabled = false
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                dpToPx(38)
+                dpToPx(40)
             ).apply {
                 setMargins(4, 2, 4, 6)
             }
-            background = createRoundedDrawable(Color.parseColor("#1E293B"), 12f)
+            background = createRoundedDrawable(COLOR_DARK_GRAY, 12f)
         }
 
         candidateContainer = LinearLayout(this).apply {
@@ -124,7 +130,7 @@ class XBoardIME : InputMethodService() {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                dpToPx(210)
+                dpToPx(215)
             )
         }
         mainContainer.addView(keyboardLayout)
@@ -172,14 +178,13 @@ class XBoardIME : InputMethodService() {
                     else -> 1.0f
                 }
 
-                val isSpecial = key in listOf("⇧", "⌫", "?123", "ABC", "↵")
                 val keyLabel = if (!isSymbols && isShifted && key.length == 1) {
                     key.uppercase(Locale.ROOT)
                 } else {
                     key
                 }
 
-                val button = createKeyButton(keyLabel, weight, isSpecial)
+                val button = createKeyButton(key, keyLabel, weight)
                 row.addView(button)
             }
 
@@ -187,9 +192,12 @@ class XBoardIME : InputMethodService() {
         }
     }
 
-    private fun createKeyButton(label: String, weight: Float, isSpecial: Boolean): Button {
+    private fun createKeyButton(rawKey: String, displayLabel: String, weight: Float): Button {
+        val isAccentGreen = rawKey in listOf("↵", "SPACE", "⇧")
+        val displayText = if (rawKey == "SPACE") "X BOARD" else displayLabel
+
         return Button(this).apply {
-            text = label
+            text = displayText
             layoutParams = LinearLayout.LayoutParams(
                 0,
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -198,32 +206,36 @@ class XBoardIME : InputMethodService() {
                 setMargins(4, 4, 4, 4)
             }
 
-            if (isSpecial || label == "↵") {
-                background = createRoundedDrawable(
-                    if (label == "↵") Color.parseColor("#2563EB") else Color.parseColor("#334155"),
-                    14f
-                )
-                setTextColor(Color.WHITE)
+            if (isAccentGreen) {
+                background = createRoundedDrawable(COLOR_ACCENT_GREEN, 14f)
+                setTextColor(COLOR_BLACK)
+                typeface = Typeface.DEFAULT_BOLD
+            } else if (rawKey in listOf("⌫", "?123", "ABC")) {
+                background = createRoundedDrawable(COLOR_SPECIAL_DARK_GRAY, 14f)
+                setTextColor(COLOR_WHITE)
             } else {
-                background = createRoundedDrawable(Color.parseColor("#1E293B"), 14f)
-                setTextColor(Color.parseColor("#F8FAFC"))
+                background = createRoundedDrawable(COLOR_DARK_GRAY, 14f)
+                setTextColor(COLOR_WHITE)
             }
 
             isAllCaps = false
             setPadding(0, 0, 0, 0)
 
             when {
-                label.length > 2 -> setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-                label in listOf("⇧", "⌫", "?123", "ABC", "↵") -> setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+                rawKey == "SPACE" -> {
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                }
+                rawKey.length > 2 -> setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                rawKey in listOf("⇧", "⌫", "?123", "ABC", "↵") -> setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
                 else -> setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
             }
 
             setOnClickListener {
                 vibrate(15)
-                handleKey(label)
+                handleKey(rawKey)
             }
 
-            if (label == "⌫") {
+            if (rawKey == "⌫") {
                 setOnLongClickListener {
                     vibrate(50)
                     clearAllText()
@@ -238,7 +250,8 @@ class XBoardIME : InputMethodService() {
         if (suggestions.isEmpty()) {
             val hint = TextView(this).apply {
                 text = "Type words to predict • Long-press ⌫ to clear all"
-                setTextColor(Color.parseColor("#64748B"))
+                setTextColor(COLOR_WHITE)
+                alpha = 0.6f
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
                 setPadding(16, 6, 16, 6)
             }
@@ -247,18 +260,23 @@ class XBoardIME : InputMethodService() {
         }
 
         for ((index, word) in suggestions.take(5).withIndex()) {
+            val isTopSuggestion = (index == 0)
             val view = TextView(this).apply {
                 text = word
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, if (index == 0) 14f else 13f)
-                setTextColor(if (index == 0) Color.parseColor("#38BDF8") else Color.parseColor("#F1F5F9"))
-                if (index == 0) typeface = Typeface.DEFAULT_BOLD
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, if (isTopSuggestion) 14f else 13f)
+                
+                if (isTopSuggestion) {
+                    setTextColor(COLOR_BLACK)
+                    typeface = Typeface.DEFAULT_BOLD
+                    background = createRoundedDrawable(COLOR_ACCENT_GREEN, 8f)
+                } else {
+                    setTextColor(COLOR_WHITE)
+                    background = createRoundedDrawable(COLOR_DARK_GRAY, 8f)
+                }
+
                 setPadding(28, 8, 28, 8)
                 isClickable = true
                 isFocusable = true
-                background = createRoundedDrawable(
-                    if (index == 0) Color.parseColor("#1E3A8A") else Color.TRANSPARENT,
-                    8f
-                )
 
                 setOnClickListener {
                     vibrate(15)
@@ -316,9 +334,15 @@ class XBoardIME : InputMethodService() {
                 updateCandidateStrip(emptyList())
             }
             else -> {
-                ic.commitText(label, 1)
+                val output = if (!isSymbols && isShifted && label.length == 1) {
+                    label.uppercase(Locale.ROOT)
+                } else {
+                    label
+                }
+                ic.commitText(output, 1)
+
                 if (label.length == 1 && label[0].isLetter()) {
-                    currentWordBuffer.append(label)
+                    currentWordBuffer.append(output)
                     val suggestions = predictWords(currentWordBuffer.toString())
                     updateCandidateStrip(suggestions)
                 } else {
