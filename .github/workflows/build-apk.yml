@@ -31,10 +31,15 @@ jobs:
         with:
           gradle-version: '8.5'
 
+      # මෙන්න මේ ස්ටෙප් එක මඟින් gradlew සහ අනෙකුත් wrapper files ස්වයංක්‍රීයව හැදෙනවා!
+      - name: Generate Gradle Wrapper
+        run: |
+          gradle wrapper --gradle-version 8.5
+
       - name: Build Debug APK
         run: |
-          # gradlew නොමැති නිසා gradle මඟින් කෙලින්ම assembleDebug ක්‍රියාත්මක කරයි
-          gradle assembleDebug --stacktrace
+          chmod +x gradlew
+          ./gradlew assembleDebug --stacktrace
 
       - name: Locate Generated APK
         id: find-apk
