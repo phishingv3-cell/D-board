@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">X Board</string>
+    <string name="ime_name">X Board Keyboard</string>
+    <string name="subtype_en_us">English (US)</string>
+    <string name="space_label">X BOARD</string>
+</resources>
