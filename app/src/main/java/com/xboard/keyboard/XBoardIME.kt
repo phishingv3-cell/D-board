@@ -5,380 +5,297 @@ import android.inputmethodservice.InputMethodService
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
-import android.view.Gravity
+import android.os.VibratorManager
+import android.text.TextUtils
+import android.util.TypedValue
+import android.view.KeyEvent
+import android.view.LayoutInflater
 import android.view.View
-import android.view.ViewGroup
-import android.widget.FrameLayout
-import android.widget.ImageView
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
+import android.widget.Button
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.content.ContextCompat
-
-enum class ShiftMode {
-    OFF, SHIFT, CAPS_LOCK
-}
-
-enum class KeyBoardMode {
-    LETTERS, SYMBOLS
-}
+import java.util.Locale
 
 class XBoardIME : InputMethodService() {
 
-    private var shiftMode = ShiftMode.OFF
-    private var keyboardMode = KeyBoardMode.LETTERS
+    private lateinit var keyboardRoot: View
+    private lateinit var keyboardLayout: LinearLayout
+    private lateinit var candidateStrip: HorizontalScrollView
+    private lateinit var candidateContainer: LinearLayout
+    private lateinit var statusLanguage: TextView
+    private lateinit var btnSettings: View
+
+    private var isShifted = false
+    private var isSymbols = false
+    private val currentWordBuffer = StringBuilder()
     private val wordPredictor = WordPredictor()
-    private var lastShiftPressTime = 0L
 
-    private lateinit var rootView: LinearLayout
-    private lateinit var rowsContainer: LinearLayout
-    private lateinit var suggest1: TextView
-    private lateinit var suggest2: TextView
-    private lateinit var suggest3: TextView
-    private var vibrator: Vibrator? = null
+    private val qwertyRows = listOf(
+        listOf("q", "w", "e", "r", "t", "y", "u", "i", "o", "p"),
+        listOf("a", "s", "d", "f", "g", "h", "j", "k", "l"),
+        listOf("⇧", "z", "x", "c", "v", "b", "n", "m", "⌫"),
+        listOf("?123", ",", "SPACE", ".", "↵")
+    )
 
-    // Letters and their secondary hint symbols exactly from screenshot
-    private val letterRow1 = listOf("Q" to "1", "W" to "2", "E" to "3", "R" to "4", "T" to "5", "Y" to "6", "U" to "7", "I" to "8", "O" to "9", "P" to "0")
-    private val letterRow2 = listOf("A" to "@", "S" to "#", "D" to "&", "F" to "*", "G" to "-", "H" to "+", "J" to "=", "K" to "(", "L" to ")")
-    private val letterRow3 = listOf("Z" to "_", "X" to "\"", "C" to "'", "V" to ":", "B" to ";", "N" to "/", "M" to "!")
+    private val symbolRows = listOf(
+        listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"),
+        listOf("@", "#", "$", "%", "&", "-", "+", "(", ")", "/"),
+        listOf("=", "*", "\"", "'", ":", ";", "!", "?", "⌫"),
+        listOf("ABC", "_", "SPACE", "/", "↵")
+    )
 
     override fun onCreate() {
         super.onCreate()
-        vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
     }
 
     override fun onCreateInputView(): View {
-        rootView = layoutInflater.inflate(R.layout.keyboard_view, null) as LinearLayout
-        rowsContainer = rootView.findViewById(R.id.rows_container)
-        suggest1 = rootView.findViewById(R.id.suggest_1)
-        suggest2 = rootView.findViewById(R.id.suggest_2)
-        suggest3 = rootView.findViewById(R.id.suggest_3)
+        keyboardRoot = layoutInflater.inflate(R.layout.keyboard_view, null)
+        keyboardLayout = keyboardRoot.findViewById(R.id.keyboard_layout)
+        candidateStrip = keyboardRoot.findViewById(R.id.candidate_strip)
+        candidateContainer = keyboardRoot.findViewById(R.id.candidate_container)
+        statusLanguage = keyboardRoot.findViewById(R.id.status_language)
+        btnSettings = keyboardRoot.findViewById(R.id.btn_keyboard_settings)
 
-        val btnClear = rootView.findViewById<ImageView>(R.id.btn_clear_input)
-        btnClear.setOnClickListener {
-            currentInputConnection?.deleteSurroundingText(100, 100)
-            updateSuggestions()
+        setupCandidateDefaults()
+        renderKeyboard()
+
+        btnSettings.setOnClickListener {
+            // Switch between primary QWERTY and symbols or reset
+            isSymbols = !isSymbols
+            renderKeyboard()
         }
 
-        setupSuggestionClick(suggest1)
-        setupSuggestionClick(suggest2)
-        setupSuggestionClick(suggest3)
-
-        renderKeyboardLayout()
-        updateSuggestions()
-
-        return rootView
+        return keyboardRoot
     }
 
-    private fun setupSuggestionClick(textView: TextView) {
-        textView.setOnClickListener {
-            val text = textView.text.toString()
-            if (text.isNotBlank()) {
-                triggerHaptic()
-                commitSuggestion(text)
+    override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
+        super.onStartInputView(info, restarting)
+        currentWordBuffer.clear()
+        isShifted = false
+        isSymbols = false
+        setupCandidateDefaults()
+        renderKeyboard()
+    }
+
+    override fun onFinishInput() {
+        super.onFinishInput()
+        currentWordBuffer.clear()
+        setupCandidateDefaults()
+    }
+
+    private fun setupCandidateDefaults() {
+        updateCandidateStrip(emptyList())
+    }
+
+    private fun renderKeyboard() {
+        keyboardLayout.removeAllViews()
+        val rows = if (isSymbols) symbolRows else qwertyRows
+
+        for ((rowIndex, rowKeys) in rows.withIndex()) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    0,
+                    1.0f
+                )
             }
+
+            for (key in rowKeys) {
+                val weight = when (key) {
+                    "SPACE" -> 4.0f
+                    "⇧", "⌫" -> 1.5f
+                    "?123", "ABC", "↵" -> 1.5f
+                    else -> 1.0f
+                }
+
+                val isSpecial = key in listOf("⇧", "⌫", "?123", "ABC", "↵")
+                val keyLabel = if (!isSymbols && isShifted && key.length == 1) {
+                    key.uppercase(Locale.ROOT)
+                } else {
+                    key
+                }
+
+                val button = createKeyButton(keyLabel, weight, isSpecial)
+                row.addView(button)
+            }
+
+            keyboardLayout.addView(row)
+        }
+    }
+
+    private fun createKeyButton(label: String, weight: Float, isAccent: Boolean = false): Button {
+        return Button(this).apply {
+            text = label
+            layoutParams = LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                weight
+            ).apply {
+                setMargins(4, 4, 4, 4)
+            }
+            setBackgroundResource(if (isAccent) R.drawable.bg_key_accent else R.drawable.bg_key_normal)
+            setTextColor(ContextCompat.getColor(context, if (isAccent) R.color.key_text_accent else R.color.key_text))
+            isAllCaps = false
+            setPadding(0, 0, 0, 0)
+            
+            // Text size adaptation
+            when {
+                label.length > 2 -> setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                label in listOf("⇧", "⌫", "123", "ABC", "↵", "CLR") -> setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                else -> setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+            }
+
+            setOnClickListener {
+                vibrate()
+                handleKey(label)
+            }
+
+            // Long click on backspace clears word or input
+            if (label == "⌫") {
+                setOnLongClickListener {
+                    vibrate(60)
+                    clearAllText()
+                    true
+                }
+            }
+        }
+    }
+
+    private fun updateCandidateStrip(suggestions: List<String>) {
+        candidateContainer.removeAllViews()
+        if (suggestions.isEmpty()) {
+            val hint = TextView(this).apply {
+                text = "X-Board • Fast Typing"
+                setTextColor(ContextCompat.getColor(context, R.color.suggestion_text_dim))
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                setPadding(16, 8, 16, 8)
+            }
+            candidateContainer.addView(hint)
+            return
+        }
+
+        for ((index, word) in suggestions.take(5).withIndex()) {
+            val view = TextView(this).apply {
+                text = word
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, if (index == 0) 15f else 14f)
+                setTextColor(ContextCompat.getColor(
+                    context,
+                    if (index == 0) R.color.color_accent else R.color.key_text
+                ))
+                setPadding(24, 8, 24, 8)
+                isClickable = true
+                isFocusable = true
+                setBackgroundResource(R.drawable.bg_suggestion_item)
+
+                setOnClickListener {
+                    vibrate(20)
+                    commitSuggestion(word)
+                }
+            }
+            candidateContainer.addView(view)
         }
     }
 
     private fun commitSuggestion(word: String) {
         val ic = currentInputConnection ?: return
-        val before = ic.getTextBeforeCursor(30, 0)?.toString() ?: ""
-        val lastWordIndex = before.lastIndexOfAny(charArrayOf(' ', '\n', '\t'))
-        val deleteCount = if (lastWordIndex == -1) before.length else before.length - lastWordIndex - 1
-
-        if (deleteCount > 0) {
-            ic.deleteSurroundingText(deleteCount, 0)
+        val currentWord = currentWordBuffer.toString()
+        if (currentWord.isNotEmpty()) {
+            ic.deleteSurroundingText(currentWord.length, 0)
         }
         ic.commitText("$word ", 1)
-        updateSuggestions()
+        currentWordBuffer.clear()
+        updateCandidateStrip(emptyList())
     }
 
-    private fun renderKeyboardLayout() {
-        rowsContainer.removeAllViews()
+    private fun handleKey(label: String) {
+        val ic = currentInputConnection ?: return
 
-        if (keyboardMode == KeyBoardMode.LETTERS) {
-            buildLetterRow(letterRow1)
-            buildLetterRow(letterRow2)
-            buildRow3Letters()
-            buildRow4()
-        } else {
-            buildSymbolsLayout()
-        }
-    }
-
-    private fun buildLetterRow(keys: List<Pair<String, String>>) {
-        val rowLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dpToPx(56)
-            ).apply { setMargins(0, dpToPx(3), 0, dpToPx(3)) }
-        }
-
-        for ((char, hint) in keys) {
-            val keyView = createKeyView(char, hint, 1f) {
-                val isUpper = shiftMode != ShiftMode.OFF
-                val textToCommit = if (isUpper) char.uppercase() else char.lowercase()
-                currentInputConnection?.commitText(textToCommit, 1)
-
-                if (shiftMode == ShiftMode.SHIFT) {
-                    shiftMode = ShiftMode.OFF
-                    renderKeyboardLayout()
+        when (label) {
+            "⌫" -> {
+                if (currentWordBuffer.isNotEmpty()) {
+                    currentWordBuffer.deleteCharAt(currentWordBuffer.length - 1)
+                    val suggestions = wordPredictor.getPredictions(currentWordBuffer.toString())
+                    updateCandidateStrip(suggestions)
                 }
-                updateSuggestions()
+                ic.deleteSurroundingText(1, 0)
             }
-            rowLayout.addView(keyView)
-        }
-        rowsContainer.addView(rowLayout)
-    }
-
-    private fun buildRow3Letters() {
-        val rowLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dpToPx(56)
-            ).apply { setMargins(0, dpToPx(3), 0, dpToPx(3)) }
-        }
-
-        // Shift Key (Neon Green)
-        val shiftKey = createSpecialKey(
-            label = when (shiftMode) {
-                ShiftMode.CAPS_LOCK -> "⇪"
-                ShiftMode.SHIFT -> "⇧"
-                ShiftMode.OFF -> "⇧"
-            },
-            weight = 1.4f,
-            isAccent = true
-        ) {
-            val now = System.currentTimeMillis()
-            shiftMode = when {
-                shiftMode == ShiftMode.CAPS_LOCK -> ShiftMode.OFF
-                shiftMode == ShiftMode.SHIFT && (now - lastShiftPressTime < 400) -> ShiftMode.CAPS_LOCK
-                shiftMode == ShiftMode.SHIFT -> ShiftMode.OFF
-                else -> ShiftMode.SHIFT
+            "CLR" -> {
+                clearAllText()
             }
-            lastShiftPressTime = now
-            renderKeyboardLayout()
-        }
-        rowLayout.addView(shiftKey)
-
-        // Letters Z-M
-        for ((char, hint) in letterRow3) {
-            val keyView = createKeyView(char, hint, 1f) {
-                val isUpper = shiftMode != ShiftMode.OFF
-                val textToCommit = if (isUpper) char.uppercase() else char.lowercase()
-                currentInputConnection?.commitText(textToCommit, 1)
-
-                if (shiftMode == ShiftMode.SHIFT) {
-                    shiftMode = ShiftMode.OFF
-                    renderKeyboardLayout()
-                }
-                updateSuggestions()
+            "⇧" -> {
+                isShifted = !isShifted
+                renderKeyboard()
             }
-            rowLayout.addView(keyView)
-        }
-
-        // Backspace Key: if text is selected, deletes selection; else deletes 1 character
-        val backspaceKey = createSpecialKey("⌫", 1.4f, isAccent = false) {
-            val ic = currentInputConnection
-            if (ic != null) {
-                val selected = ic.getSelectedText(0)
-                if (!selected.isNullOrEmpty()) {
-                    // Deletes selected text
-                    ic.commitText("", 1)
+            "?123" -> {
+                isSymbols = true
+                renderKeyboard()
+            }
+            "ABC" -> {
+                isSymbols = false
+                renderKeyboard()
+            }
+            "SPACE" -> {
+                ic.commitText(" ", 1)
+                currentWordBuffer.clear()
+                updateCandidateStrip(emptyList())
+            }
+            "↵" -> {
+                ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))
+                ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER))
+                currentWordBuffer.clear()
+                updateCandidateStrip(emptyList())
+            }
+            else -> {
+                ic.commitText(label, 1)
+                if (label.length == 1 && label[0].isLetter()) {
+                    currentWordBuffer.append(label)
+                    val suggestions = wordPredictor.getPredictions(currentWordBuffer.toString())
+                    updateCandidateStrip(suggestions)
                 } else {
-                    ic.deleteSurroundingText(1, 0)
+                    currentWordBuffer.clear()
+                    updateCandidateStrip(emptyList())
+                }
+
+                if (isShifted) {
+                    isShifted = false
+                    renderKeyboard()
                 }
             }
-            updateSuggestions()
-        }
-        rowLayout.addView(backspaceKey)
-
-        rowsContainer.addView(rowLayout)
-    }
-
-    private fun buildRow4() {
-        val rowLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dpToPx(56)
-            ).apply { setMargins(0, dpToPx(3), 0, dpToPx(3)) }
-        }
-
-        // 123 switch key
-        rowLayout.addView(createSpecialKey(if (keyboardMode == KeyBoardMode.LETTERS) "123" else "ABC", 1.2f, false) {
-            keyboardMode = if (keyboardMode == KeyBoardMode.LETTERS) KeyBoardMode.SYMBOLS else KeyBoardMode.LETTERS
-            renderKeyboardLayout()
-        })
-
-        // Emoji key
-        rowLayout.addView(createSpecialKey("😊", 1.0f, false) {
-            currentInputConnection?.commitText("😊", 1)
-        })
-
-        // Comma key
-        rowLayout.addView(createKeyView(",", "🎙", 1.0f) {
-            currentInputConnection?.commitText(",", 1)
-            updateSuggestions()
-        })
-
-        // Space bar: "X BOARD" in neon green
-        val spaceBar = createSpecialKey("X BOARD", 3.8f, isAccent = true) {
-            currentInputConnection?.commitText(" ", 1)
-            updateSuggestions()
-        }
-        rowLayout.addView(spaceBar)
-
-        // Period key
-        rowLayout.addView(createKeyView(".", ",!?", 1.0f) {
-            currentInputConnection?.commitText(".", 1)
-            updateSuggestions()
-        })
-
-        // Enter key in neon green
-        rowLayout.addView(createSpecialKey("↵", 1.2f, isAccent = true) {
-            sendKeyChar('\n')
-            updateSuggestions()
-        })
-
-        rowsContainer.addView(rowLayout)
-    }
-
-    private fun buildSymbolsLayout() {
-        val symRow1 = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0")
-        val symRow2 = listOf("@", "#", "$", "%", "&", "*", "-", "+", "(", ")")
-        val symRow3 = listOf("!", "\"", "'", ":", ";", "/", "?")
-
-        val r1 = createSimpleRow(symRow1)
-        val r2 = createSimpleRow(symRow2)
-
-        val r3 = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(56))
-        }
-        r3.addView(createSpecialKey("=\\<", 1.4f, false) {})
-        for (sym in symRow3) {
-            r3.addView(createSpecialKey(sym, 1f, false) {
-                currentInputConnection?.commitText(sym, 1)
-            })
-        }
-        r3.addView(createSpecialKey("⌫", 1.4f, false) {
-            currentInputConnection?.deleteSurroundingText(1, 0)
-        })
-
-        rowsContainer.addView(r1)
-        rowsContainer.addView(r2)
-        rowsContainer.addView(r3)
-        buildRow4()
-    }
-
-    private fun createSimpleRow(chars: List<String>): LinearLayout {
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(56))
-            chars.forEach { char ->
-                addView(createSpecialKey(char, 1f, false) {
-                    currentInputConnection?.commitText(char, 1)
-                })
-            }
         }
     }
 
-    private fun createKeyView(primary: String, hint: String, weight: Float, onClick: () -> Unit): View {
-        val frame = FrameLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, weight).apply {
-                setMargins(dpToPx(2), 0, dpToPx(2), 0)
-            }
-            background = ContextCompat.getDrawable(this@XBoardIME, R.drawable.bg_key_normal)
-            isClickable = true
-            isFocusable = true
-        }
-
-        val hintView = TextView(this).apply {
-            text = hint
-            textSize = 10sp
-            setTextColor(ContextCompat.getColor(this@XBoardIME, R.color.key_hint_symbol))
-            gravity = Gravity.CENTER_HORIZONTAL or Gravity.TOP
-            setPadding(0, dpToPx(3), 0, 0)
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        }
-
-        val isUpper = shiftMode != ShiftMode.OFF
-        val mainTextView = TextView(this).apply {
-            text = if (isUpper) primary.uppercase() else primary.lowercase()
-            textSize = 18sp
-            setTextColor(ContextCompat.getColor(this@XBoardIME, R.color.key_text_primary))
-            gravity = Gravity.CENTER
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        }
-
-        frame.addView(hintView)
-        frame.addView(mainTextView)
-
-        frame.setOnClickListener {
-            triggerHaptic()
-            onClick()
-        }
-
-        return frame
+    private fun clearAllText() {
+        val ic = currentInputConnection ?: return
+        val before = ic.getTextBeforeCursor(2000, 0) ?: ""
+        val after = ic.getTextAfterCursor(2000, 0) ?: ""
+        ic.deleteSurroundingText(before.length, after.length)
+        currentWordBuffer.clear()
+        updateCandidateStrip(emptyList())
     }
 
-    private fun createSpecialKey(label: String, weight: Float, isAccent: Boolean, onClick: () -> Unit): View {
-        val key = TextView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, weight).apply {
-                setMargins(dpToPx(2), 0, dpToPx(2), 0)
-            }
-            text = label
-            textSize = if (label.length > 3) 14sp else 18sp
-            gravity = Gravity.CENTER
-            isClickable = true
-            isFocusable = true
-
-            if (isAccent) {
-                background = ContextCompat.getDrawable(this@XBoardIME, R.drawable.bg_key_accent)
-                setTextColor(ContextCompat.getColor(this@XBoardIME, R.color.accent_text_dark))
-                paint.isFakeBoldText = true
-            } else {
-                background = ContextCompat.getDrawable(this@XBoardIME, R.drawable.bg_key_normal)
-                setTextColor(ContextCompat.getColor(this@XBoardIME, R.color.key_text_primary))
-            }
-        }
-
-        key.setOnClickListener {
-            triggerHaptic()
-            onClick()
-        }
-
-        return key
-    }
-
-    private fun updateSuggestions() {
-        val textBefore = currentInputConnection?.getTextBeforeCursor(50, 0)?.toString()
-        val suggestions = wordPredictor.getSuggestions(textBefore)
-        suggest1.text = suggestions.getOrNull(0) ?: ""
-        suggest2.text = suggestions.getOrNull(1) ?: ""
-        suggest3.text = suggestions.getOrNull(2) ?: ""
-    }
-
-    private fun triggerHaptic() {
+    private fun vibrate(durationMs: Long = 15) {
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                vibrator?.vibrate(VibrationEffect.createOneShot(15, VibrationEffect.DEFAULT_AMPLITUDE))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+                vibratorManager?.defaultVibrator?.vibrate(
+                    VibrationEffect.createOneShot(durationMs, VibrationEffect.DEFAULT_AMPLITUDE)
+                )
             } else {
                 @Suppress("DEPRECATION")
-                vibrator?.vibrate(15)
+                val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    vibrator?.vibrate(VibrationEffect.createOneShot(durationMs, VibrationEffect.DEFAULT_AMPLITUDE))
+                } else {
+                    @Suppress("DEPRECATION")
+                    vibrator?.vibrate(durationMs)
+                }
             }
-        } catch (_: Exception) {}
-    }
-
-    private fun dpToPx(dp: Int): Int {
-        return (dp * resources.displayMetrics.density).toInt()
+        } catch (_: Exception) {
+        }
     }
 }
