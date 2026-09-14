@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="keyboard_bg">#111216</color>
+    <color name="key_normal">#1E2027</color>
+    <color name="key_pressed">#2E323F</color>
+    <color name="accent_green">#00DF6C</color>
+    <color name="accent_green_pressed">#00BA5A</color>
+    <color name="accent_text_dark">#052413</color>
+    <color name="key_text_primary">#FFFFFF</color>
+    <color name="key_hint_symbol">#6B7284</color>
+    <color name="suggestion_green">#00DF6C</color>
+</resources>
