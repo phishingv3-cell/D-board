@@ -31,7 +31,6 @@ jobs:
         with:
           gradle-version: '8.5'
 
-      # මෙන්න මේ ස්ටෙප් එක මඟින් gradlew සහ අනෙකුත් wrapper files ස්වයංක්‍රීයව හැදෙනවා!
       - name: Generate Gradle Wrapper
         run: |
           gradle wrapper --gradle-version 8.5
